@@ -1,0 +1,98 @@
+#include <math.h>
+#include <stdio.h>
+#include "kernel.h"
+
+double shader(vec3_t fragPos, vec3_t normal, render_params_t* params) {
+  const double diffuse = fabs(vecdot(vnormed(params->l), normal));
+  const double intensity = MAX(params->ml, params->al + diffuse);
+
+  return intensity;
+}
+
+double kernel(vec3_t pc, double* min_a, triangle_t trig, render_params_t* params) {
+  const vec3_t ts = trig.p[0];
+  const vec3_t tp1mts = vecsub(trig.p[1], ts);
+  const vec3_t tp2mts = vecsub(trig.p[2], ts);
+
+  mat3_t Ut;
+  Ut.c[0] = tp1mts;
+  Ut.c[1] = vcross(Ut.c[0], vcross(tp2mts, Ut.c[0]));
+  Ut.c[2] = vnormed(vcross(Ut.c[0], Ut.c[1]));
+  Ut.c[1] = vnormed(Ut.c[1]);
+  Ut.c[0] = vnormed(Ut.c[0]);
+
+  if(fabs(vecdot(Ut.c[2], params->cv)) < 0.0000001) {
+    return 0.0;
+  }
+
+  mat3_t Uc;
+  const vec3_t cvn = vnormed(params->cv);
+  Uc.c[0] = vcross(cvn, vnormed(params->cz));
+  Uc.c[1] = vnormed(vcross(Uc.c[0], cvn));
+  Uc.c[0] = vnormed(Uc.c[0]);
+  Uc.c[2] = vmul(-1.0, cvn);
+
+  vec3_t pcd = pc;
+  pcd.e[2] -= params->cd;
+  const vec3_t rv = mvmul(Uc, pcd);
+  const vec3_t csmts = vecsub(params->cs, ts);
+
+  const double a = -mtvmul(Ut, csmts).e[2] / mtvmul(Ut, rv).e[2];
+
+  if(isnan(a) || a * vnorm(pcd) < 1 || (*min_a >= 0.0 && a >= *min_a)) {
+    return 0.0;
+  }
+
+  const vec3_t dt = mtvmul(Ut, vecadd(csmts, vmul(a, rv)));
+  const int num_sides = 3;
+
+  vec3_t prev_u = mtvmul(Ut, vecsub(trig.p[0], trig.p[num_sides - 1]));
+  for(int i = 0; i < num_sides; i++) { 
+    const vec3_t u = mtvmul(Ut, vecsub(trig.p[(i + 1) % num_sides], trig.p[i]));
+    const vec3_t pt = mtvmul(Ut, vecsub(trig.p[i], ts));
+    const double s = vecdot(vcross(vecsub(dt, pt), u), vcross(u, prev_u));
+    if(s < 0.0) {
+      return 0.0;
+    }
+    prev_u = u;
+  }
+/*
+  const vec3_t u21 = mtvmul(Ut, vecsub(trig.p[1], trig.p[0]));
+  const vec3_t u31 = mtvmul(Ut, vecsub(trig.p[2], trig.p[0]));
+  const vec3_t u32 = mtvmul(Ut, vecsub(trig.p[2], trig.p[1]));
+  const double s21 = vecdot(vcross(dt, u21), vcross(u31, u21));
+  const double s31 = vecdot(vcross(dt, u31), vcross(u21, u31));
+  const double s32 = vecdot(vcross(vecsub(dt, u21), u32), vcross(vmul(-1.0, u21), u32));
+
+  if(s21 < 0 || s31 < 0 || s32 < 0) {
+    return 0.0;
+  }
+*/
+  *min_a = a;
+
+//  const vec3_t normal = vmul( -1 + 2 * (mtvmul(Ut, params->cs).e[2] > 0), Ut.c[2]);
+  const vec3_t fragPos = vecadd(params->cs, vmul(a, rv));
+
+  return MAX(MIN(1.0, shader(fragPos, Ut.c[2], params)), 0.0);
+}
+
+void render(double* buffer, triangle_t* trigs, size_t num_trigs, render_params_t* params) {
+  for(int x = 0; x < params->screen_x; x++) {
+    for(int y = 0; y < params->screen_y; y++) {
+      double min_a = -1.0;
+      vec3_t pc;
+      pc.e[0] = params->cw * 0.5 *
+                MIN(MAX(-1.0, (double)(x - params->screen_x / 2) / (double)(params->screen_x / 2)), 1.0);
+      pc.e[1] = params->ch * 0.5 * 
+                MIN(MAX(-1.0, (double)(y - params->screen_y / 2) / (double)(params->screen_y / 2)), 1.0);
+      pc.e[2] = 0;
+      double val = 0.0;
+      for(size_t t = 0; t < num_trigs; t++) {
+        const double r = kernel(pc, &min_a, trigs[t], params);
+        val = (r != 0.0) ? r : val;
+      }
+      buffer[x * params->screen_y + y] = val;
+    }
+  }
+}
+  

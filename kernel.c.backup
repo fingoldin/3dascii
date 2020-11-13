@@ -1,0 +1,80 @@
+#include <math.h>
+#include <stdio.h>
+#include "kernel.h"
+
+double shader(vec3_t fragPos, vec3_t normal, render_params_t* params) {
+  const double diffuse = fabs(vecdot(vnormed(params->l), normal));
+  const double intensity = MAX(params->ml, params->al + diffuse);
+
+  return intensity;
+}
+
+double kernel(vec3_t pc, double* min_a, poly_t poly, render_params_t* params) {
+  const double epsilon = 0.0000001;
+  const vec3_t ts = poly.p[0];
+  const vec3_t tp1mts = vecsub(poly.p[1], ts);
+  const vec3_t tp2mts = vecsub(poly.p[2], ts);
+
+  mat3_t Ut;
+  Ut.c[0] = tp1mts;
+  Ut.c[1] = vcross(Ut.c[0], vcross(tp2mts, Ut.c[0]));
+  Ut.c[2] = vnormed(vcross(Ut.c[0], Ut.c[1]));
+  Ut.c[1] = vnormed(Ut.c[1]);
+  Ut.c[0] = vnormed(Ut.c[0]);
+
+  if(fabs(vecdot(Ut.c[2], params->cv)) < epsilon) {
+    return 0.0;
+  }
+
+  vec3_t pcd = pc;
+  pcd.e[2] -= params->cd;
+  const vec3_t rv = mvmul(Uc, pcd);
+  const vec3_t csmts = vecsub(params->cs, ts);
+
+  const double a = -mtvmul(Ut, csmts).e[2] / mtvmul(Ut, rv).e[2];
+
+  if(isnan(a) || a * vnorm(pcd) < 1 || (*min_a >= 0.0 && a >= *min_a)) {
+    return 0.0;
+  }
+
+  const vec3_t dt = mtvmul(Ut, vecadd(csmts, vmul(a, rv)));
+
+  vec3_t prev_u = mtvmul(Ut, vecsub(poly.p[0], poly.p[poly.num_sides - 1]));
+  for(size_t i = 0; i < poly.num_sides; i++) { 
+    const vec3_t u = mtvmul(Ut, vecsub(poly.p[(i + 1) % poly.num_sides], poly.p[i]));
+    const vec3_t pt = mtvmul(Ut, vecsub(poly.p[i], ts));
+    const double s = vecdot(vcross(vecsub(dt, pt), u), vcross(u, prev_u));
+    if(s < 0) {
+      return 0.0;
+    }
+    prev_u = u;
+  }
+
+  *min_a = a;
+
+//  const vec3_t normal = vmul( -1 + 2 * (mtvmul(Ut, params->cs).e[2] > 0), Ut.c[2]);
+  const vec3_t fragPos = vecadd(params->cs, vmul(a, rv));
+
+  return MAX(MIN(1.0, shader(fragPos, Ut.c[2], params)), 0.0);
+}
+
+void render(double* buffer, poly_t* polys, size_t num_polys, render_params_t* params) {
+  for(int x = 0; x < params->screen_x; x++) {
+    for(int y = 0; y < params->screen_y; y++) {
+      double min_a = -1.0;
+      vec3_t pc;
+      pc.e[0] = params->cw * 0.5 *
+                MIN(MAX(-1.0, (double)(x - params->screen_x / 2) / (double)(params->screen_x / 2)), 1.0);
+      pc.e[1] = params->ch * 0.5 * 
+                MIN(MAX(-1.0, (double)(y - params->screen_y / 2) / (double)(params->screen_y / 2)), 1.0);
+      pc.e[2] = 0;
+      double val = 0.0;
+      for(size_t t = 0; t < num_polys; t++) {
+        const double r = kernel(pc, &min_a, polys[t], params);
+        val = (r != 0.0) ? r : val;
+      }
+      buffer[x * params->screen_y + y] = val;
+    }
+  }
+}
+  
